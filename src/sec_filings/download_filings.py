@@ -70,20 +70,34 @@ def collect_filings(submissions: dict) -> list[dict]:
     return filings
 
 
+def resolve_document_url(filing: dict, cik: str) -> tuple[str, str]:
+    """Return (url, extension) for the actual filing document.
+
+    For older filings where primaryDocument is empty, fall back to the
+    full submission text file ({accession}.txt).
+    """
+    accession_no_dashes = filing["accessionNumber"].replace("-", "")
+    cik_num = cik.lstrip("0")
+    base = f"{ARCHIVES_URL}/{cik_num}/{accession_no_dashes}"
+
+    primary = filing["primaryDocument"]
+    if primary:
+        ext = Path(primary).suffix or ".html"
+        return f"{base}/{primary}", ext
+
+    # Old filings: no primaryDocument, download the full submission text
+    return f"{base}/{filing['accessionNumber']}.txt", ".txt"
+
+
 def download_filing(
     filing: dict, cik: str, output_dir: Path, client: httpx.Client
 ) -> None:
     """Download a single filing document."""
-    accession_no_dashes = filing["accessionNumber"].replace("-", "")
-    cik_num = cik.lstrip("0")
-    doc_url = (
-        f"{ARCHIVES_URL}/{cik_num}/{accession_no_dashes}/{filing['primaryDocument']}"
-    )
+    doc_url, ext = resolve_document_url(filing, cik)
 
     form_dir = output_dir / filing["form"]
     form_dir.mkdir(parents=True, exist_ok=True)
 
-    ext = Path(filing["primaryDocument"]).suffix or ".html"
     filename = f"{filing['filingDate']}_{filing['accessionNumber']}{ext}"
     dest = form_dir / filename
 
@@ -91,9 +105,18 @@ def download_filing(
         print(f"  Skipping (exists): {dest}")
         return
 
-    time.sleep(REQUEST_DELAY)
-    resp = client.get(doc_url, timeout=60)
-    resp.raise_for_status()
+    for attempt in range(3):
+        time.sleep(REQUEST_DELAY)
+        try:
+            resp = client.get(doc_url, timeout=120)
+            resp.raise_for_status()
+            break
+        except httpx.TimeoutException:
+            if attempt < 2:
+                print(f"  Timeout, retrying ({attempt + 2}/3)...")
+                time.sleep(2)
+            else:
+                raise
 
     dest.write_bytes(resp.content)
     print(f"  Downloaded: {dest} ({len(resp.content):,} bytes)")
@@ -147,7 +170,7 @@ def main() -> None:
             print(f"[{i}/{len(filings)}] {filing['form']} - {filing['filingDate']}")
             try:
                 download_filing(filing, cik, output_dir, client)
-            except httpx.HTTPStatusError as e:
+            except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
                 print(f"  ERROR: {e}")
 
     print("\nDone!")
