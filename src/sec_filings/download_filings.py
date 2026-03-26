@@ -2,10 +2,13 @@
 
 import argparse
 import json
+import ssl
 import time
 from pathlib import Path
 
 import httpx
+
+SSL_CONTEXT = ssl.create_default_context()
 
 BASE_URL = "https://data.sec.gov"
 ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
@@ -26,7 +29,7 @@ def pad_cik(cik: str) -> str:
 def get_submissions(cik: str) -> dict:
     """Fetch the full submissions JSON, including paginated history."""
     url = f"{BASE_URL}/submissions/CIK{pad_cik(cik)}.json"
-    resp = httpx.get(url, headers=HEADERS, timeout=30)
+    resp = httpx.get(url, headers=HEADERS, verify=SSL_CONTEXT, timeout=30)
     resp.raise_for_status()
     return resp.json()
 
@@ -60,7 +63,7 @@ def collect_filings(submissions: dict) -> list[dict]:
         url = f"{BASE_URL}/submissions/{filename}"
         print(f"  Fetching older filings index: {filename}")
         time.sleep(REQUEST_DELAY)
-        resp = httpx.get(url, headers=HEADERS, timeout=30)
+        resp = httpx.get(url, headers=HEADERS, verify=SSL_CONTEXT, timeout=30)
         resp.raise_for_status()
         extract_from_block(resp.json())
 
@@ -137,7 +140,9 @@ def main() -> None:
 
     # Download
     print("\nDownloading filings...")
-    with httpx.Client(headers=HEADERS, follow_redirects=True) as client:
+    with httpx.Client(
+        headers=HEADERS, verify=SSL_CONTEXT, follow_redirects=True
+    ) as client:
         for i, filing in enumerate(filings, 1):
             print(f"[{i}/{len(filings)}] {filing['form']} - {filing['filingDate']}")
             try:
